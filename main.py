@@ -250,8 +250,11 @@ def health() -> Any:
 
 @app.route("/live")
 def live_matches() -> Any:
-    include_details = request.args.get("details", "1") not in {"0", "false", "no"}
-    detail_limit = int(request.args.get("limit", str(LIVE_DETAIL_LIMIT)))
+    # Fast default for browser/EchoKill consumers: the rendered Cricbuzz list is enough
+    # to prove liveness and avoids multiple slow detail-page browser navigations.
+    # Ask for details explicitly with /live?details=1&limit=1.
+    include_details = request.args.get("details", "0") in {"1", "true", "yes"}
+    detail_limit = int(request.args.get("limit", str(LIVE_DETAIL_LIMIT if include_details else 0)))
     key = f"live:{include_details}:{detail_limit}"
     return jsonify(cached(key, lambda: scrape_live(include_details=include_details, detail_limit=detail_limit)))
 
