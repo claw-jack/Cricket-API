@@ -8,8 +8,9 @@ The original repo scraped Cricbuzz with static BeautifulSoup selectors that no l
 
 - `GET /health` — service + CamoFox health
 - `GET /live` — fast live/recent/upcoming Cricbuzz match list from Cricbuzz HTML, with CamoFox fallback
-  - `?details=1` enables slower CamoFox detail-page fetches for top matches
-  - `?limit=3` controls how many match detail pages are visited when details are enabled
+  - `?teams=England%20Men,Nepal%20Men` filters to EchoKill’s senior England/Nepal men’s cricket matches, excluding Women/Lions/A-team fixtures
+  - `?details=1` enriches filtered matches by parsing Cricbuzz detail pages for real score/status/venue/series fields; direct HTTP is tried first, CamoFox is fallback
+  - `?limit=8` controls how many match detail pages are visited when details are enabled
 - `GET /schedule` — upcoming schedule parsed from Cricbuzz schedule page
 - `GET /players/<name>` — intentionally disabled for now; EchoKill integration only needs live/schedule
 

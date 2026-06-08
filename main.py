@@ -1,7 +1,7 @@
+import html as html_lib
 import os
 import re
 import time
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -121,7 +121,9 @@ def parse_detail(match: dict[str, str], detail: dict[str, Any]) -> dict[str, Any
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     title = detail.get("title") or ""
 
-    score_title = title.split("|")[0].strip()
+    score_title = html_lib.unescape(title.split("|")[0].strip())
+    if "live cricket stream" in score_title.lower() and not re.search(r"\b[A-Z][A-Z0-9]{1,5}\s+\d", score_title):
+        score_title = ""
     status = None
     scan_lines = lines
     headings = detail.get("h1") or []
@@ -164,7 +166,7 @@ def parse_detail(match: dict[str, str], detail: dict[str, Any]) -> dict[str, Any
     return {
         **match,
         "matchTitle": (detail.get("h1") or [match.get("text")])[0],
-        "score": score_title,
+        "score": score_title or None,
         "status": status or match.get("text"),
         "series": series,
         "venue": venue,
@@ -185,37 +187,101 @@ def normalize_match_link(href: str, text: str) -> dict[str, str] | None:
     return {"id": match.group(1), "slug": match.group(2), "href": href, "text": text}
 
 
-def scrape_live_fast() -> dict[str, Any]:
+def _http_text(url: str, *, timeout: float = 12) -> str:
     response = requests.get(
-        CRICBUZZ_LIVE_URL,
+        url,
         headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"},
-        timeout=12,
+        timeout=timeout,
     )
     response.raise_for_status()
+    return response.text
+
+
+def scrape_live_fast() -> dict[str, Any]:
+    html = _http_text(CRICBUZZ_LIVE_URL)
     seen: dict[str, dict[str, str]] = {}
-    for href, label in re.findall(r'href="([^"]*live-cricket-scores/[^"]+)"[^>]*>(.*?)</a>', response.text, re.S):
+    for href, label in re.findall(r'href="([^"]*live-cricket-scores/[^"]+)"[^>]*>(.*?)</a>', html, re.S):
         item = normalize_match_link(href, label)
         if not item:
             continue
-        current = seen.get(item["href"])
+        key = item["id"]
+        current = seen.get(key)
         if not current or len(item["text"]) > len(current["text"]):
-            seen[item["href"]] = item
+            seen[key] = item
     matches = list(seen.values())[:80]
     return {"source": "cricbuzz/http", "fetchedAt": utc_now(), "count": len(matches), "matches": matches}
 
 
-def scrape_live(include_details: bool = True, detail_limit: int = LIVE_DETAIL_LIMIT) -> dict[str, Any]:
+def _team_aliases(team: str) -> list[str]:
+    normalized = team.strip().lower()
+    if normalized in {"england", "england men", "england-men", "eng"}:
+        return ["england"]
+    if normalized in {"nepal", "nepal men", "nepal-men", "nep"}:
+        return ["nepal"]
+    return [normalized]
+
+
+def _matches_team_filter(match: dict[str, Any], teams: list[str]) -> bool:
+    if not teams:
+        return True
+    text = str(match.get("text") or match.get("matchTitle") or "")
+    slug = str(match.get("slug") or "")
+    haystack = f"{text} {slug} {match.get('score') or ''} {match.get('status') or ''}".lower()
+    if any(excluded in haystack for excluded in ("england women", "engw", "england lions", "enga", " nepal women", "nepw")):
+        # England/Nepal filters mean senior men's national sides for EchoKill.
+        if any(team.strip().lower() in {"england", "england men", "eng", "nepal", "nepal men", "nep"} for team in teams):
+            return False
+    for team in teams:
+        for alias in _team_aliases(team):
+            if re.search(rf"(^|\b){re.escape(alias)}\s+vs\b|\bvs\s+{re.escape(alias)}(\b|$)", text.lower()):
+                return True
+            if alias in haystack:
+                return True
+    return False
+
+
+def _strip_html_text(raw_html: str) -> str:
+    import html as html_lib
+
+    raw_html = re.sub(r"<script[^>]*>.*?</script>", " ", raw_html, flags=re.S | re.I)
+    raw_html = re.sub(r"<style[^>]*>.*?</style>", " ", raw_html, flags=re.S | re.I)
+    text = html_lib.unescape(re.sub(r"<[^>]+>", "\n", raw_html))
+    return re.sub(r"\n{2,}", "\n", text)
+
+
+def fetch_match_detail_http(match: dict[str, str]) -> dict[str, Any]:
+    raw = _http_text(match["href"], timeout=15)
+    title_match = re.search(r"<title>(.*?)</title>", raw, re.S | re.I)
+    h1s = [re.sub(r"\s+", " ", _strip_html_text(value)).strip() for value in re.findall(r"<h[123][^>]*>(.*?)</h[123]>", raw, re.S | re.I)]
+    return parse_detail(match, {"title": re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else "", "h1": [h for h in h1s if h], "text": _strip_html_text(raw)})
+
+
+def scrape_live(include_details: bool = True, detail_limit: int = LIVE_DETAIL_LIMIT, teams: list[str] | None = None) -> dict[str, Any]:
+    teams = teams or []
     if not include_details:
         try:
-            return scrape_live_fast()
+            payload = scrape_live_fast()
+            matches = [match for match in payload["matches"] if _matches_team_filter(match, teams)]
+            return {**payload, "count": len(matches), "matches": matches, "teamFilters": teams}
         except Exception:
             # Fall back to CamoFox if direct Cricbuzz HTML ever blocks or changes.
             pass
+
+    # Prefer direct detail-page HTML for score parsing; it is far faster than browsering every match.
+    try:
+        payload = scrape_live_fast()
+        base_matches = [match for match in payload["matches"] if _matches_team_filter(match, teams)]
+        detailed = [fetch_match_detail_http(match) for match in base_matches[:detail_limit]]
+        matches = detailed + base_matches[detail_limit:]
+        return {**payload, "source": "cricbuzz/http-detail", "count": len(matches), "matches": matches, "teamFilters": teams}
+    except Exception:
+        pass
 
     client = CamoFoxClient()
     try:
         client.navigate(CRICBUZZ_LIVE_URL, wait_seconds=3)
         matches = client.evaluate(LIVE_LINKS_JS)
+        matches = [match for match in matches if _matches_team_filter(match, teams)]
         if include_details:
             detailed: list[dict[str, Any]] = []
             for match in matches[:detail_limit]:
@@ -226,7 +292,7 @@ def scrape_live(include_details: bool = True, detail_limit: int = LIVE_DETAIL_LI
                 except Exception as exc:
                     detailed.append({**match, "error": str(exc)})
             matches = detailed + matches[detail_limit:]
-        return {"source": "cricbuzz/camofox", "fetchedAt": utc_now(), "count": len(matches), "matches": matches}
+        return {"source": "cricbuzz/camofox", "fetchedAt": utc_now(), "count": len(matches), "matches": matches, "teamFilters": teams}
     finally:
         client.close()
 
@@ -293,8 +359,9 @@ def live_matches() -> Any:
     # Ask for details explicitly with /live?details=1&limit=1.
     include_details = request.args.get("details", "0") in {"1", "true", "yes"}
     detail_limit = int(request.args.get("limit", str(LIVE_DETAIL_LIMIT if include_details else 0)))
-    key = f"live:{include_details}:{detail_limit}"
-    return jsonify(cached(key, lambda: scrape_live(include_details=include_details, detail_limit=detail_limit)))
+    teams = [part.strip() for part in request.args.get("teams", "").split(",") if part.strip()]
+    key = f"live:{include_details}:{detail_limit}:{','.join(sorted(teams)).lower()}"
+    return jsonify(cached(key, lambda: scrape_live(include_details=include_details, detail_limit=detail_limit, teams=teams)))
 
 
 @app.route("/schedule")
