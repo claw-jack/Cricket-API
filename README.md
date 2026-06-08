@@ -7,8 +7,8 @@ The original repo scraped Cricbuzz with static BeautifulSoup selectors that no l
 ## Endpoints
 
 - `GET /health` — service + CamoFox health
-- `GET /live` — fast live/recent/upcoming Cricbuzz match list
-  - `?details=1` enables slower detail-page fetches for top matches
+- `GET /live` — fast live/recent/upcoming Cricbuzz match list from Cricbuzz HTML, with CamoFox fallback
+  - `?details=1` enables slower CamoFox detail-page fetches for top matches
   - `?limit=3` controls how many match detail pages are visited when details are enabled
 - `GET /schedule` — upcoming schedule parsed from Cricbuzz schedule page
 - `GET /players/<name>` — intentionally disabled for now; EchoKill integration only needs live/schedule

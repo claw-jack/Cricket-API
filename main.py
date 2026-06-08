@@ -173,16 +173,54 @@ def parse_detail(match: dict[str, str], detail: dict[str, Any]) -> dict[str, Any
     }
 
 
+def normalize_match_link(href: str, text: str) -> dict[str, str] | None:
+    href = href.replace("&amp;", "&")
+    if href.startswith("/"):
+        href = f"https://www.cricbuzz.com{href}"
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    match = re.search(r"live-cricket-scores/(\d+)/([^?#\"]+)", href)
+    if not match or not text:
+        return None
+    return {"id": match.group(1), "slug": match.group(2), "href": href, "text": text}
+
+
+def scrape_live_fast() -> dict[str, Any]:
+    response = requests.get(
+        CRICBUZZ_LIVE_URL,
+        headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"},
+        timeout=12,
+    )
+    response.raise_for_status()
+    seen: dict[str, dict[str, str]] = {}
+    for href, label in re.findall(r'href="([^"]*live-cricket-scores/[^"]+)"[^>]*>(.*?)</a>', response.text, re.S):
+        item = normalize_match_link(href, label)
+        if not item:
+            continue
+        current = seen.get(item["href"])
+        if not current or len(item["text"]) > len(current["text"]):
+            seen[item["href"]] = item
+    matches = list(seen.values())[:80]
+    return {"source": "cricbuzz/http", "fetchedAt": utc_now(), "count": len(matches), "matches": matches}
+
+
 def scrape_live(include_details: bool = True, detail_limit: int = LIVE_DETAIL_LIMIT) -> dict[str, Any]:
+    if not include_details:
+        try:
+            return scrape_live_fast()
+        except Exception:
+            # Fall back to CamoFox if direct Cricbuzz HTML ever blocks or changes.
+            pass
+
     client = CamoFoxClient()
     try:
-        client.navigate(CRICBUZZ_LIVE_URL, wait_seconds=4)
+        client.navigate(CRICBUZZ_LIVE_URL, wait_seconds=3)
         matches = client.evaluate(LIVE_LINKS_JS)
         if include_details:
             detailed: list[dict[str, Any]] = []
             for match in matches[:detail_limit]:
                 try:
-                    client.navigate(match["href"], wait_seconds=2)
+                    client.navigate(match["href"], wait_seconds=1.5)
                     detail = client.evaluate(DETAIL_JS)
                     detailed.append(parse_detail(match, detail))
                 except Exception as exc:
