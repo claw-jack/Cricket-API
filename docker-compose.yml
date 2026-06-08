@@ -1,0 +1,11 @@
+services:
+  cricket-api:
+    build: .
+    container_name: cricket-api
+    restart: unless-stopped
+    environment:
+      CAMOFOX_BASE_URL: ${CAMOFOX_BASE_URL:-http://192.168.40.86:9377}
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-60}
+      LIVE_DETAIL_LIMIT: ${LIVE_DETAIL_LIMIT:-5}
+    ports:
+      - "${CRICKET_API_PORT:-8012}:8000"
